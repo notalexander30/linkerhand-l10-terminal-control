@@ -1,5 +1,5 @@
 LEFT_HAND:
-- ACTION_NAME: 张开
+- ACTION_NAME: Open Hand
   POSITION:
   - 255
   - 70
@@ -11,7 +11,7 @@ LEFT_HAND:
   - 255
   - 255
   - 255
-- ACTION_NAME: 捏合5CM
+- ACTION_NAME: Pinch 5 cm
   POSITION:
   - 165
   - 70
@@ -23,7 +23,7 @@ LEFT_HAND:
   - 255
   - 255
   - 88
-- ACTION_NAME: 捏合1CM
+- ACTION_NAME: Pinch 1 cm
   POSITION:
   - 150
   - 70
@@ -35,7 +35,7 @@ LEFT_HAND:
   - 255
   - 255
   - 88
-- ACTION_NAME: 握3CM物品
+- ACTION_NAME: Grasp 3 cm Object
   POSITION:
   - 113
   - 70
@@ -47,7 +47,7 @@ LEFT_HAND:
   - 255
   - 255
   - 88
-- ACTION_NAME: 准备抓握
+- ACTION_NAME: Prepare Grasp
   POSITION:
   - 255
   - 70
@@ -59,7 +59,7 @@ LEFT_HAND:
   - 255
   - 255
   - 121
-- ACTION_NAME: 拇指弯曲
+- ACTION_NAME: Thumb Bend
   POSITION:
   - 35
   - 140
@@ -71,7 +71,7 @@ LEFT_HAND:
   - 255
   - 255
   - 30
-- ACTION_NAME: 食指弯曲
+- ACTION_NAME: Index Bend
   POSITION:
   - 255
   - 70
@@ -83,7 +83,7 @@ LEFT_HAND:
   - 255
   - 255
   - 255
-- ACTION_NAME: shishi
+- ACTION_NAME: Test Pose
   POSITION:
   - 85
   - 30
@@ -96,7 +96,7 @@ LEFT_HAND:
   - 0
   - 66
 RIGHT_HAND:
-- ACTION_NAME: 张开
+- ACTION_NAME: Open Hand
   POSITION:
   - 255
   - 70
@@ -108,7 +108,7 @@ RIGHT_HAND:
   - 255
   - 255
   - 255
-- ACTION_NAME: 捏合5CM
+- ACTION_NAME: Pinch 5 cm
   POSITION:
   - 165
   - 70
@@ -120,7 +120,7 @@ RIGHT_HAND:
   - 255
   - 255
   - 88
-- ACTION_NAME: 捏合1CM
+- ACTION_NAME: Pinch 1 cm
   POSITION:
   - 150
   - 70
@@ -132,7 +132,7 @@ RIGHT_HAND:
   - 255
   - 255
   - 88
-- ACTION_NAME: 准备抓握
+- ACTION_NAME: Prepare Grasp
   POSITION:
   - 255
   - 70

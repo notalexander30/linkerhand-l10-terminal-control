@@ -1,12 +1,20 @@
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt5.QtCore import Qt,pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
+
 
 class LeftView(QWidget):
-    # 定义一个信号，当滑动条的值发生变化时发出该信号
+    # Signal emitted whenever a slider value changes.
     slider_value_changed = pyqtSignal(dict)
-    def __init__(self, joint_name=[],init_pos=[]):
+
+    def __init__(self, joint_name=[], init_pos=[]):
         super().__init__()
         self.is_open = True
         self.joint_name = joint_name
@@ -14,21 +22,23 @@ class LeftView(QWidget):
         self.init_view()
 
     def init_view(self):
+        """Define the live joint slider section."""
         main_layout = QVBoxLayout(self)
-        # 存储滑动条和标签
+
+        # GUI section: joint value list.
+        joint_group = QGroupBox("Joint Value List")
+        joint_layout = QVBoxLayout(joint_group)
+
         self.sliders = []
         self.labels = []
-        # 创建滑动条
         for i in range(len(self.joint_name)):
-            # 每个滑动条和标签的水平布局
             slider_layout = QHBoxLayout()
-            # 标签显示滑动条的值
-            label = QLabel(f"{self.joint_name[i]}: 255", self)
-            label.setFixedWidth(110)  # 设置固定宽度
+
+            label = QLabel(f"{self.joint_name[i]}: {self.init_pos[i]}", self)
+            label.setFixedWidth(160)
             self.labels.append(label)
             slider_layout.addWidget(label)
 
-            # 滑动条
             slider = QSlider(Qt.Horizontal, self)
             slider.setRange(0, 255)
             slider.setValue(self.init_pos[i])
@@ -36,9 +46,12 @@ class LeftView(QWidget):
             slider.valueChanged.connect(lambda value, index=i: self.update_label(index, value))
             self.sliders.append(slider)
             slider_layout.addWidget(slider)
-            main_layout.addLayout(slider_layout)
-        # 创建开启/关闭按钮
-        self.toggle_button = QPushButton("已开启", self)
+            joint_layout.addLayout(slider_layout)
+
+        main_layout.addWidget(joint_group)
+
+        # GUI section: existing enable/disable display toggle.
+        self.toggle_button = QPushButton("Enabled", self)
         self.toggle_button.setCheckable(True)
         self.toggle_button.clicked.connect(self.toggle_button_clicked)
         main_layout.addWidget(self.toggle_button)
@@ -49,28 +62,27 @@ class LeftView(QWidget):
         sliders = self.findChildren(QSlider)
         for i, slider in enumerate(sliders):
             slider_values[i] = slider.value()
-        # 发出信号，传递滑动条的当前值
         self.slider_value_changed.emit(slider_values)
-        
-        
+
     def set_slider_values(self, values):
         for i, value in enumerate(values):
             if i < len(self.sliders):
                 self.sliders[i].setValue(value)
-                
+
     def get_slider_values(self):
-        """获取所有滑动条的值"""
+        """Return all slider values."""
         return [slider.value() for slider in self.sliders]
+
     def handle_button_click(self, text):
         print(f"Button clicked with text: {text}")
-        # 在这里处理按钮点击事件
+        # Preserved placeholder for button-click handling.
 
     def toggle_button_clicked(self):
         if self.toggle_button.isChecked():
-            self.toggle_button.setText("已关闭")
+            self.toggle_button.setText("Disabled")
             self.is_open = False
-            # 在这里处理开启状态
+            # Existing display state only; no hardware command is sent here.
         else:
-            self.toggle_button.setText("已开启")
+            self.toggle_button.setText("Enabled")
             self.is_open = True
-            # 在这里处理关闭状态
+            # Existing display state only; no hardware command is sent here.
