@@ -1,0 +1,27 @@
+{
+  "open_close_demo": [
+    {"pose": "open", "duration_seconds": 1.0},
+    {"pose": "fist", "duration_seconds": 2.0},
+    {"pose": "open", "duration_seconds": 2.0}
+  ],
+  "pinch_demo": [
+    {"pose": "open", "duration_seconds": 1.0},
+    {"pose": "prepare_grasp", "duration_seconds": 1.5},
+    {"pose": "pinch_5cm", "duration_seconds": 1.5},
+    {"pose": "pinch_1cm", "duration_seconds": 1.5},
+    {"pose": "open", "duration_seconds": 2.0}
+  ],
+  "count_demo": [
+    {"pose": "number_one", "duration_seconds": 1.0},
+    {"pose": "number_two", "duration_seconds": 1.0},
+    {"pose": "number_three", "duration_seconds": 1.0},
+    {"pose": "number_four", "duration_seconds": 1.0},
+    {"pose": "number_five", "duration_seconds": 1.0},
+    {"pose": "open", "duration_seconds": 1.5}
+  ],
+  "safe_zero_demo": [
+    {"pose": "open", "duration_seconds": 1.0},
+    {"values": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "duration_seconds": 3.0},
+    {"pose": "open", "duration_seconds": 3.0}
+  ]
+}
