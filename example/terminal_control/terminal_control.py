@@ -9,6 +9,9 @@ import argparse
 import json
 import math
 import os
+import re
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -17,8 +20,6 @@ from pathlib import Path
 CURRENT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = CURRENT_DIR.parent.parent
 sys.path.append(str(REPO_ROOT))
-
-from LinkerHand.linker_hand_api import LinkerHandApi  # noqa: E402
 
 
 HAND_TYPE = "left"
@@ -40,10 +41,21 @@ ZERO_POSE = [0] * 10
 INTERPOLATION_HZ = 10
 POSES_PATH = CURRENT_DIR / "poses_l10.json"
 SEQUENCES_PATH = CURRENT_DIR / "sequences_l10.json"
+LinkerHandApi = None
 
 
 class SafetyError(RuntimeError):
     """Raised when a real hardware command should be blocked."""
+
+
+def load_linker_hand_api():
+    """Import the SDK only when a real hardware read/write needs it."""
+    global LinkerHandApi
+    if LinkerHandApi is None:
+        from LinkerHand.linker_hand_api import LinkerHandApi as sdk_api  # noqa: WPS433
+
+        LinkerHandApi = sdk_api
+    return LinkerHandApi
 
 
 def load_json(path):
@@ -114,6 +126,24 @@ def embedded_serial_number(version):
     return -1
 
 
+def is_valid_embedded_version(version):
+    return isinstance(version, (list, tuple)) and len(version) >= 7
+
+
+def describe_embedded_version(version):
+    if not is_valid_embedded_version(version):
+        return "No valid embedded version reply."
+
+    direction_value = version[3]
+    direction = chr(direction_value) if isinstance(direction_value, int) and 32 <= direction_value <= 126 else str(direction_value)
+    software = f"V{version[4] >> 4}.{version[4] & 0x0F}"
+    hardware = f"V{version[5] >> 4}.{version[5] & 0x0F}"
+    return (
+        f"degrees={version[0]}, mechanical={version[1]}, serial/index={version[2]}, "
+        f"direction={direction}, software={software}, hardware={hardware}, revision={version[6]}"
+    )
+
+
 def connect_api(args, require_movement=False):
     if args.mock:
         print("[MOCK] Hardware connection skipped.")
@@ -121,7 +151,8 @@ def connect_api(args, require_movement=False):
 
     print(f"Connecting through SDK: hand_type={HAND_TYPE}, hand_joint={HAND_JOINT}, can={args.can}")
     try:
-        api = LinkerHandApi(hand_type=HAND_TYPE, hand_joint=HAND_JOINT, can=args.can)
+        sdk_api = load_linker_hand_api()
+        api = sdk_api(hand_type=HAND_TYPE, hand_joint=HAND_JOINT, can=args.can)
         version = api.get_embedded_version()
     except Exception as exc:
         message = f"Hand connection failed: {exc}"
@@ -144,6 +175,24 @@ def connect_api(args, require_movement=False):
     return api, serial_number, version
 
 
+def probe_embedded_version(hand_type, can_channel):
+    print(f"\nRead-only SDK probe: hand_type={hand_type}, hand_joint={HAND_JOINT}, can={can_channel}")
+    api = None
+    try:
+        sdk_api = load_linker_hand_api()
+        api = sdk_api(hand_type=hand_type, hand_joint=HAND_JOINT, can=can_channel)
+        version = api.get_embedded_version()
+        print(f"CAN ID: {hex(api.hand_id)}")
+        print(f"Embedded version raw: {version}")
+        print(describe_embedded_version(version))
+        return version
+    except Exception as exc:
+        print(f"Probe failed: {exc}")
+        return None
+    finally:
+        close_api(api)
+
+
 def close_api(api):
     if api is None:
         return
@@ -156,6 +205,79 @@ def close_api(api):
     shutdown = getattr(bus, "shutdown", None)
     if callable(shutdown):
         shutdown()
+
+
+def run_system(command):
+    try:
+        return subprocess.run(command, text=True, capture_output=True, check=False)
+    except FileNotFoundError:
+        return None
+
+
+def parse_counter_block(lines, prefix):
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith(f"{prefix}:"):
+            continue
+        headers = stripped.split(":", 1)[1].split()
+        if index + 1 >= len(lines):
+            return {}
+        values = []
+        for part in lines[index + 1].split():
+            try:
+                values.append(int(part))
+            except ValueError:
+                pass
+        return dict(zip(headers, values))
+    return {}
+
+
+def parse_can_counters(ip_output):
+    lines = ip_output.splitlines()
+    return {
+        "rx": parse_counter_block(lines, "RX"),
+        "tx": parse_counter_block(lines, "TX"),
+    }
+
+
+def counter_delta(before, after, section, key):
+    return after.get(section, {}).get(key, 0) - before.get(section, {}).get(key, 0)
+
+
+def show_can_interface(can_channel):
+    result = run_system(["ip", "-statistics", "-details", "link", "show", can_channel])
+    if result is None:
+        print("The 'ip' command was not found. Install iproute2/can-utils on Linux.")
+        return {}, ""
+    if result.returncode != 0:
+        print(result.stderr.strip() or result.stdout.strip())
+        return {}, result.stdout
+
+    print(result.stdout.rstrip())
+    counters = parse_can_counters(result.stdout)
+    return counters, result.stdout
+
+
+def summarize_can_flags(ip_output):
+    first_line = next((line for line in ip_output.splitlines() if line.strip()), "")
+    flag_match = re.search(r"<([^>]+)>", first_line)
+    flags = set(flag_match.group(1).split(",")) if flag_match else set()
+    state_match = re.search(r"\bstate\s+(\S+)", first_line)
+    state = state_match.group(1) if state_match else "unknown"
+    bitrate_ok = "bitrate 1000000" in ip_output
+
+    print("\nCAN interface interpretation")
+    print("----------------------------")
+    print(f"State: {state}")
+    print(f"Flags: {', '.join(sorted(flags)) if flags else 'not detected'}")
+    print(f"Bitrate 1000000: {'yes' if bitrate_ok else 'no or not shown'}")
+
+    if "UP" not in flags:
+        print("Problem: interface is not UP. Run 'make can-reset'.")
+    if "LOWER_UP" not in flags:
+        print("Problem: adapter link is not LOWER_UP. Replug USB-CAN and check the driver.")
+    if not bitrate_ok:
+        print("Problem: bitrate does not show 1000000. Run 'make can-reset'.")
 
 
 def send_pose(api, args, values, label):
@@ -206,6 +328,66 @@ def command_status(args):
         print(f"Movement Allowed: {args.mock or args.force or not is_bad_serial(serial_number)}")
     finally:
         close_api(api)
+
+
+def command_doctor(args):
+    print("L10 CAN doctor")
+    print("==============")
+    print("This command performs read-only checks and does not send movement commands.")
+    print(f"CAN Channel: {args.can}")
+
+    if sys.platform != "linux":
+        print("Doctor is intended for Linux SocketCAN systems.")
+        return
+
+    if shutil.which("ip") is None:
+        print("Missing 'ip'. Install it with: sudo apt install iproute2")
+        return
+
+    if shutil.which("candump") is None:
+        print("Note: 'candump' not found. Install it with: sudo apt install can-utils")
+
+    print("\nCAN counters before SDK probe")
+    print("-----------------------------")
+    before, ip_output = show_can_interface(args.can)
+    summarize_can_flags(ip_output)
+
+    versions = []
+    if args.mock:
+        print("\n[MOCK] SDK probe skipped.")
+    else:
+        versions.append(("left", probe_embedded_version("left", args.can)))
+        versions.append(("right", probe_embedded_version("right", args.can)))
+
+    print("\nCAN counters after SDK probe")
+    print("----------------------------")
+    after, _ = show_can_interface(args.can)
+
+    rx_packets = counter_delta(before, after, "rx", "packets")
+    tx_packets = counter_delta(before, after, "tx", "packets")
+    rx_errors = counter_delta(before, after, "rx", "errors")
+    tx_errors = counter_delta(before, after, "tx", "errors")
+
+    print("\nDoctor conclusion")
+    print("-----------------")
+    detected = [(hand_type, version) for hand_type, version in versions if is_valid_embedded_version(version)]
+    if detected:
+        for hand_type, version in detected:
+            print(f"Detected valid L10 embedded version on hand_type={hand_type}: {describe_embedded_version(version)}")
+        print("The SDK can read the hand. Use status again before sending any real movement.")
+        return
+
+    print(f"Packet delta during probe: RX={rx_packets}, TX={tx_packets}, RX errors={rx_errors}, TX errors={tx_errors}")
+    if tx_errors > 0 or rx_errors > 0:
+        print("CAN errors increased. Check CAN-H/CAN-L wiring, termination, bitrate, hand power, and USB-CAN adapter.")
+    elif tx_packets > 0 and rx_packets == 0:
+        print("The computer sent SDK version requests, but no reply was received from the hand.")
+        print("Most likely causes: hand not powered, CAN-H/CAN-L swapped, missing GND, no termination, loose connector, or adapter issue.")
+    elif rx_packets > 0:
+        print("CAN traffic was received, but the SDK did not parse a valid L10 version.")
+        print("Run 'make candump' in one terminal and 'make status' in another, then compare the received frame IDs/data.")
+    else:
+        print("No CAN traffic changed during the SDK probe. Check that the adapter is really can0 and that no process is holding it.")
 
 
 def command_joints(args):
@@ -318,6 +500,7 @@ def build_parser():
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("status", help="Connect and print SDK/hardware status.")
+    subparsers.add_parser("doctor", help="Run read-only CAN/SDK diagnostics for connection debugging.")
     subparsers.add_parser("joints", help="Read and print current joint values.")
 
     set_parser = subparsers.add_parser("set", help="Send direct L10 joint values.")
@@ -352,6 +535,8 @@ def main(argv=None):
     try:
         if args.command == "status":
             command_status(args)
+        elif args.command == "doctor":
+            command_doctor(args)
         elif args.command == "joints":
             command_joints(args)
         elif args.command == "set":
