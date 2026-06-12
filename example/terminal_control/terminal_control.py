@@ -113,14 +113,9 @@ def close_api(api):
     if api is None:
         return
 
-    close_can = getattr(api, "close_can", None)
-    if callable(close_can):
-        try:
-            close_can()
-            return
-        except Exception:
-            pass
-
+    # Do not call LinkerHandApi.close_can() here. In this SDK it runs
+    # OpenCan.close_can0(), which brings the Linux can0 network interface down
+    # and makes the next command fail with "Network is down".
     hand = getattr(api, "hand", None)
     close_interface = getattr(hand, "close_can_interface", None)
     if callable(close_interface):
