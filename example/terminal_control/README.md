@@ -6,6 +6,8 @@ This tool reuses `LinkerHandApi`, the same SDK layer used by the PyQt GUI. It do
 
 This SDK version exposes `get_embedded_version()` for L10 detection. It does not expose `get_serial_number()` on `LinkerHandApi`, so this terminal tool safely uses the embedded version bytes for the detection gate.
 
+The real hardware target is a left L10. If the SDK/firmware answers on the right-hand CAN ID, keep the physical setup as left but run commands with `--sdk-hand-type right` or `make HAND_TYPE=right ...`.
+
 ## Safety
 
 - Keep the hand clear of people, cables, tools, and table edges before sending a real command.
@@ -59,6 +61,9 @@ make candump
 # Read-only status through the SDK.
 make status
 
+# Read-only status using the SDK right-hand CAN ID.
+make HAND_TYPE=right status
+
 # Mock status without touching hardware.
 make mock-status
 ```
@@ -69,6 +74,12 @@ If you are already inside `example/terminal_control`, the local Makefile forward
 
 ```bash
 python3 terminal_control.py status
+```
+
+If the device responds as the SDK right hand:
+
+```bash
+python3 terminal_control.py --sdk-hand-type right status
 ```
 
 Mock status without touching hardware:
@@ -89,6 +100,13 @@ Or with Make:
 
 ```bash
 make doctor
+```
+
+If `doctor` detects the hand on `hand_type=right`, run:
+
+```bash
+make HAND_TYPE=right status
+make HAND_TYPE=right joints
 ```
 
 If `doctor` says TX increased but RX stayed at `0`, the computer sent the request but the hand did not reply. Check hand power, CAN-H/CAN-L wiring, GND/common ground, termination, connectors, and the USB-CAN adapter.

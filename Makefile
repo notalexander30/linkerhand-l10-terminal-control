@@ -4,6 +4,7 @@
 
 CAN ?= can0
 BITRATE ?= 1000000
+HAND_TYPE ?= left
 PY ?= python3
 TC := example/terminal_control/terminal_control.py
 
@@ -37,6 +38,7 @@ help:
 	@echo "  make kill           Kill old terminal/gui controller Python processes"
 	@echo ""
 	@echo "Override CAN like this: make CAN=can1 can-reset"
+	@echo "Override SDK hand ID like this: make HAND_TYPE=right status"
 
 # Install common dependencies used by this terminal controller and SocketCAN tools.
 install:
@@ -89,22 +91,22 @@ candump:
 
 # Run the terminal controller status without connecting to real hardware.
 mock-status:
-	@$(PY) $(TC) --mock --can $(CAN) status
+	@$(PY) $(TC) --mock --can $(CAN) --sdk-hand-type $(HAND_TYPE) status
 
 # Run read-only real hardware status through the SDK.
 status:
-	@$(PY) $(TC) --can $(CAN) status
+	@$(PY) $(TC) --can $(CAN) --sdk-hand-type $(HAND_TYPE) status
 
 # Run read-only diagnostics that compare CAN counters and SDK version probes.
 doctor:
-	@$(PY) $(TC) --can $(CAN) doctor
+	@$(PY) $(TC) --can $(CAN) --sdk-hand-type $(HAND_TYPE) doctor
 
 # Reset CAN, then run read-only diagnostics.
 debug: can-reset doctor
 
 # Read current joint values through the SDK; movement is still safety-gated.
 joints:
-	@$(PY) $(TC) --can $(CAN) joints
+	@$(PY) $(TC) --can $(CAN) --sdk-hand-type $(HAND_TYPE) joints
 
 # List pose names from example/terminal_control/poses_l10.json.
 list-poses:

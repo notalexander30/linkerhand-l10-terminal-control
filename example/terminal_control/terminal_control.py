@@ -22,7 +22,8 @@ REPO_ROOT = CURRENT_DIR.parent.parent
 sys.path.append(str(REPO_ROOT))
 
 
-HAND_TYPE = "left"
+PHYSICAL_HAND_TYPE = "left"
+DEFAULT_SDK_HAND_TYPE = "left"
 HAND_JOINT = "L10"
 JOINT_NAMES = [
     "Thumb Base",
@@ -152,6 +153,10 @@ def describe_embedded_version(version):
     )
 
 
+def sdk_hand_type(args):
+    return getattr(args, "sdk_hand_type", DEFAULT_SDK_HAND_TYPE)
+
+
 def read_sdk_serial_number(api):
     """Read serial number when the installed SDK exposes it.
 
@@ -217,10 +222,16 @@ def connect_api(args, require_movement=False):
         print("[MOCK] Hardware connection skipped.")
         return None, -1, None
 
-    print(f"Connecting through SDK: hand_type={HAND_TYPE}, hand_joint={HAND_JOINT}, can={args.can}")
+    hand_type = sdk_hand_type(args)
+    print(f"Connecting through SDK: hand_type={hand_type}, hand_joint={HAND_JOINT}, can={args.can}")
+    if hand_type != PHYSICAL_HAND_TYPE:
+        print(
+            f"Note: physical hand is treated as {PHYSICAL_HAND_TYPE}, "
+            f"but SDK hand_type={hand_type} is being used for CAN addressing."
+        )
     try:
         sdk_api = load_linker_hand_api()
-        api = sdk_api(hand_type=HAND_TYPE, hand_joint=HAND_JOINT, can=args.can)
+        api = sdk_api(hand_type=hand_type, hand_joint=HAND_JOINT, can=args.can)
         version, serial_number, detection_attempts = read_detection(api)
     except Exception as exc:
         message = f"Hand connection failed: {exc}"
@@ -401,7 +412,8 @@ def command_status(args):
         print("\nStatus")
         print("------")
         print(f"Mode: {'mock' if args.mock else 'real'}")
-        print(f"Hand Type: {HAND_TYPE}")
+        print(f"Physical Hand Type: {PHYSICAL_HAND_TYPE}")
+        print(f"SDK Hand Type: {sdk_hand_type(args)}")
         print(f"Joint Model: {HAND_JOINT}")
         print(f"CAN Channel: {args.can}")
         print(f"Embedded Version: {version}")
@@ -416,6 +428,7 @@ def command_doctor(args):
     print("==============")
     print("This command performs read-only checks and does not send movement commands.")
     print(f"CAN Channel: {args.can}")
+    print(f"Selected SDK Hand Type: {sdk_hand_type(args)}")
 
     if sys.platform != "linux":
         print("Doctor is intended for Linux SocketCAN systems.")
@@ -460,6 +473,8 @@ def command_doctor(args):
             print(f"Detected hand data on hand_type={result['hand_type']}:")
             print(f"  Embedded: {describe_embedded_version(result['version'])}")
             print(f"  Serial/version number: {result['serial_number']}")
+            if result["hand_type"] != sdk_hand_type(args):
+                print(f"  To use this SDK ID, run: make HAND_TYPE={result['hand_type']} status")
         print("The SDK can read the hand. Use status again before sending any real movement.")
         return
 
@@ -583,6 +598,12 @@ def build_parser():
     parser.add_argument("--mock", action="store_true", help="Print commands without connecting or sending to hardware.")
     parser.add_argument("--force", action="store_true", help="Allow movement even if hardware serial/version is not detected.")
     parser.add_argument("--can", default="can0", help="CAN channel passed to LinkerHandApi. Default: can0.")
+    parser.add_argument(
+        "--sdk-hand-type",
+        choices=["left", "right"],
+        default=DEFAULT_SDK_HAND_TYPE,
+        help="SDK hand_type/CAN ID to use. Default: left. Try right if doctor detects the hand on the right SDK ID.",
+    )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("status", help="Connect and print SDK/hardware status.")
