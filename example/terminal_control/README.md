@@ -46,6 +46,16 @@ make can-show
 
 `can-show` should show `can0` as `UP` and bitrate `1000000`.
 
+If you want to debug the CAN adapter manually without running the SDK:
+
+```bash
+make can-replug
+```
+
+This kills old controller processes, puts `can0` down, waits for you to unplug
+and replug the USB-CAN adapter, brings `can0` back up, and prints CAN counters.
+It does not send hand movement commands.
+
 ## Read Status
 
 ```bash

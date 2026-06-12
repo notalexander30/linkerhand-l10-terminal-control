@@ -10,7 +10,7 @@ TC := example/terminal_control/terminal_control.py
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install py-check kill can-down can-up can-reset can-show can-stats candump status doctor debug mock-status state joints set-state home zero list-poses list-sequences stop
+.PHONY: help install py-check kill can-down can-up can-reset can-replug can-show can-stats candump status doctor debug mock-status state joints set-state home zero list-poses list-sequences stop
 
 # Show available shortcuts.
 help:
@@ -20,6 +20,7 @@ help:
 	@echo "  make install        Install Python and Linux CAN dependencies"
 	@echo "  make kill           Stop old terminal/gui controller processes"
 	@echo "  make can-reset      Reset $(CAN) at $(BITRATE) bps"
+	@echo "  make can-replug     Kill programs, drop CAN, wait for USB replug, bring CAN up"
 	@echo "  make can-show       Show $(CAN) link details"
 	@echo "  make can-stats      Show $(CAN) packet/error counters"
 	@echo "  make candump        Watch CAN frames; stop with Ctrl+C"
@@ -69,6 +70,17 @@ can-reset: can-down
 	@sleep 1
 	@$(MAKE) --no-print-directory can-up
 	@$(MAKE) --no-print-directory can-show
+
+# Manual USB-CAN recovery flow. This does not run the SDK or send hand commands.
+can-replug: kill
+	@echo "Putting $(CAN) down before USB-CAN replug..."
+	@sudo ip link set $(CAN) down 2>/dev/null || true
+	@echo ""
+	@echo "Now unplug the USB-CAN adapter, wait a few seconds, plug it back in,"
+	@echo "and make sure the hand power is ON."
+	@bash -c 'read -r -p "Press Enter after replugging USB-CAN... " _; for i in $$(seq 1 15); do if ip link show "$(CAN)" >/dev/null 2>&1; then exit 0; fi; echo "Waiting for $(CAN) to appear ($$i/15)..."; sleep 1; done; echo "$(CAN) did not appear. Check USB-CAN cable/driver."; exit 1'
+	@$(MAKE) --no-print-directory can-up
+	@$(MAKE) --no-print-directory can-stats
 
 # Show CAN link details.
 can-show:
