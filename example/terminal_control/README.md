@@ -12,6 +12,9 @@ state = hand.get_state()
 
 The wrapper adds validation, mock mode, readable joint names, and a safety gate
 before movement when the SDK does not detect an embedded version or serial.
+Some L10 firmware/SDK combinations do not return embedded version or serial,
+but still return a valid 10-value `get_state()` response. In that case this
+wrapper treats the valid state read as SDK communication proof before movement.
 
 ## Safety
 
@@ -21,6 +24,9 @@ before movement when the SDK does not detect an embedded version or serial.
 - Use `--mock` first for new values.
 - Keep the hand clear of people, cables, tools, and table edges.
 - If SDK detection fails, movement is blocked unless `--force` is used.
+- If version/serial detection fails but `get_state()` returns ten values from
+  `0` to `255`, movement is allowed and the tool prints that state was used as
+  the detection source.
 
 ## Setup
 

@@ -144,6 +144,15 @@ def bad_serial(serial_number):
     return serial_number in (None, "", -1, "-1", [])
 
 
+def valid_state(state):
+    if not isinstance(state, list) or len(state) != 10:
+        return False
+    for value in state:
+        if not isinstance(value, (int, float)) or value < 0 or value > 255:
+            return False
+    return True
+
+
 def read_serial(api):
     serial_number = getattr(api, "serial_number", None)
     if not bad_serial(serial_number):
@@ -197,6 +206,16 @@ def read_detection(api, attempts=3, delay=0.2):
     return version, serial_number, attempts
 
 
+def read_state_probe(api):
+    try:
+        state = api.get_state()
+    except Exception:
+        return None
+    if valid_state(state):
+        return [int(value) for value in state]
+    return None
+
+
 def format_version(version):
     if not is_valid_version(version):
         return "not detected"
@@ -220,16 +239,24 @@ def connect_sdk(args, require_movement=False):
     api_class = load_sdk()
     api = api_class(hand_type=args.hand_type, hand_joint=HAND_JOINT, can=args.can)
     version, serial_number, attempts = read_detection(api)
+    state_probe = None
+    if require_movement and not (is_valid_version(version) or not bad_serial(serial_number)):
+        state_probe = read_state_probe(api)
+
     info = {
         "version": version,
         "serial_number": serial_number,
         "attempts": attempts,
-        "detected": is_valid_version(version) or not bad_serial(serial_number),
+        "state_probe": state_probe,
+        "detected": is_valid_version(version) or not bad_serial(serial_number) or state_probe is not None,
+        "detection_source": "version/serial" if (is_valid_version(version) or not bad_serial(serial_number)) else ("state" if state_probe is not None else "none"),
     }
 
     print(f"Embedded version raw: {version}")
     print(f"Serial number: {serial_number}")
     print(f"Detection attempts: {attempts}")
+    if state_probe is not None:
+        print("Version/serial not detected, but SDK get_state() returned a valid 10-value L10 state.")
 
     if require_movement and not info["detected"] and not args.force:
         close_api(api)
@@ -243,7 +270,7 @@ def connect_sdk(args, require_movement=False):
 
 def current_state(api):
     state = api.get_state()
-    if not isinstance(state, list) or len(state) != 10:
+    if not valid_state(state):
         return None
     return [int(value) for value in state]
 
@@ -278,7 +305,14 @@ def command_status(args):
     api, info = connect_sdk(args, require_movement=False)
     try:
         if args.mock:
-            info = {"version": None, "serial_number": -1, "attempts": 0, "detected": False}
+            info = {
+                "version": None,
+                "serial_number": -1,
+                "attempts": 0,
+                "state_probe": None,
+                "detected": False,
+                "detection_source": "mock",
+            }
 
         print("\nStatus")
         print("------")
@@ -289,6 +323,7 @@ def command_status(args):
         print(f"Embedded Version: {info['version']}")
         print(f"Decoded Version: {format_version(info['version'])}")
         print(f"Serial Number: {info['serial_number']}")
+        print(f"Detection Source: {info['detection_source']}")
         print(f"Movement Allowed: {args.mock or args.force or info['detected']}")
     finally:
         close_api(api)
