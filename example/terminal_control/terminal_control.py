@@ -39,6 +39,8 @@ JOINT_NAMES = [
 HOME_POSE = [255] * 10
 ZERO_POSE = [0] * 10
 INTERPOLATION_HZ = 10
+DETECTION_ATTEMPTS = 5
+DETECTION_DELAY_SECONDS = 0.2
 POSES_PATH = CURRENT_DIR / "poses_l10.json"
 SEQUENCES_PATH = CURRENT_DIR / "sequences_l10.json"
 LinkerHandApi = None
@@ -107,7 +109,7 @@ def get_pose(name):
 
 
 def is_bad_serial(serial_number):
-    return serial_number is None or serial_number == -1
+    return serial_number in (None, "", -1, "-1")
 
 
 def embedded_serial_number(version):
@@ -124,6 +126,12 @@ def embedded_serial_number(version):
     if isinstance(version, (list, tuple)) and len(version) >= 3:
         return int(version[2])
     return -1
+
+
+def normalize_serial_number(serial_number):
+    if serial_number in (None, "", -1, "-1"):
+        return -1
+    return serial_number
 
 
 def is_valid_embedded_version(version):
@@ -144,6 +152,66 @@ def describe_embedded_version(version):
     )
 
 
+def read_sdk_serial_number(api):
+    """Read serial number when the installed SDK exposes it.
+
+    SDK 2.1.x does not expose get_serial_number() for L10, while newer SDKs may.
+    Missing serial support is not treated as an exception; the embedded version
+    read remains the main L10 detection path.
+    """
+    serial_number = getattr(api, "serial_number", None)
+    if not is_bad_serial(serial_number):
+        return normalize_serial_number(serial_number)
+
+    for owner in (api, getattr(api, "hand", None)):
+        if owner is None:
+            continue
+        get_serial = getattr(owner, "get_serial_number", None)
+        if not callable(get_serial):
+            continue
+        try:
+            serial_number = get_serial()
+        except Exception:
+            continue
+        if not is_bad_serial(serial_number):
+            return normalize_serial_number(serial_number)
+
+    return -1
+
+
+def read_detection(api):
+    """Read hand detection data with retries for the SDK receive thread.
+
+    The L10 CAN class updates embedded version data from a background receive
+    thread. A single immediate get_embedded_version() call can return None if
+    the reply arrives slightly later, so this helper retries without changing
+    any low-level CAN behavior.
+    """
+    version = None
+    serial_number = -1
+
+    for attempt in range(1, DETECTION_ATTEMPTS + 1):
+        try:
+            version = api.get_embedded_version()
+        except Exception:
+            version = getattr(getattr(api, "hand", None), "version", None)
+
+        if not is_valid_embedded_version(version):
+            version = getattr(getattr(api, "hand", None), "version", version)
+
+        if is_valid_embedded_version(version):
+            serial_number = embedded_serial_number(version)
+            return version, serial_number, attempt
+
+        serial_number = read_sdk_serial_number(api)
+        if not is_bad_serial(serial_number):
+            return version, serial_number, attempt
+
+        time.sleep(DETECTION_DELAY_SECONDS)
+
+    return version, serial_number, DETECTION_ATTEMPTS
+
+
 def connect_api(args, require_movement=False):
     if args.mock:
         print("[MOCK] Hardware connection skipped.")
@@ -153,7 +221,7 @@ def connect_api(args, require_movement=False):
     try:
         sdk_api = load_linker_hand_api()
         api = sdk_api(hand_type=HAND_TYPE, hand_joint=HAND_JOINT, can=args.can)
-        version = api.get_embedded_version()
+        version, serial_number, detection_attempts = read_detection(api)
     except Exception as exc:
         message = f"Hand connection failed: {exc}"
         if require_movement:
@@ -161,9 +229,9 @@ def connect_api(args, require_movement=False):
         print(message)
         return None, -1, None
 
-    serial_number = embedded_serial_number(version)
     print(f"Embedded version raw: {version}")
     print(f"Detected serial/version number: {serial_number}")
+    print(f"Detection attempts: {detection_attempts}")
 
     if require_movement and is_bad_serial(serial_number) and not args.force:
         close_api(api)
@@ -181,14 +249,27 @@ def probe_embedded_version(hand_type, can_channel):
     try:
         sdk_api = load_linker_hand_api()
         api = sdk_api(hand_type=hand_type, hand_joint=HAND_JOINT, can=can_channel)
-        version = api.get_embedded_version()
+        version, serial_number, detection_attempts = read_detection(api)
         print(f"CAN ID: {hex(api.hand_id)}")
         print(f"Embedded version raw: {version}")
+        print(f"Detected serial/version number: {serial_number}")
+        print(f"Detection attempts: {detection_attempts}")
         print(describe_embedded_version(version))
-        return version
+        return {
+            "hand_type": hand_type,
+            "version": version,
+            "serial_number": serial_number,
+            "detection_attempts": detection_attempts,
+        }
     except Exception as exc:
         print(f"Probe failed: {exc}")
-        return None
+        return {
+            "hand_type": hand_type,
+            "version": None,
+            "serial_number": -1,
+            "detection_attempts": 0,
+            "error": str(exc),
+        }
     finally:
         close_api(api)
 
@@ -352,12 +433,12 @@ def command_doctor(args):
     before, ip_output = show_can_interface(args.can)
     summarize_can_flags(ip_output)
 
-    versions = []
+    probe_results = []
     if args.mock:
         print("\n[MOCK] SDK probe skipped.")
     else:
-        versions.append(("left", probe_embedded_version("left", args.can)))
-        versions.append(("right", probe_embedded_version("right", args.can)))
+        probe_results.append(probe_embedded_version("left", args.can))
+        probe_results.append(probe_embedded_version("right", args.can))
 
     print("\nCAN counters after SDK probe")
     print("----------------------------")
@@ -370,10 +451,15 @@ def command_doctor(args):
 
     print("\nDoctor conclusion")
     print("-----------------")
-    detected = [(hand_type, version) for hand_type, version in versions if is_valid_embedded_version(version)]
+    detected = [
+        result for result in probe_results
+        if is_valid_embedded_version(result["version"]) or not is_bad_serial(result["serial_number"])
+    ]
     if detected:
-        for hand_type, version in detected:
-            print(f"Detected valid L10 embedded version on hand_type={hand_type}: {describe_embedded_version(version)}")
+        for result in detected:
+            print(f"Detected hand data on hand_type={result['hand_type']}:")
+            print(f"  Embedded: {describe_embedded_version(result['version'])}")
+            print(f"  Serial/version number: {result['serial_number']}")
         print("The SDK can read the hand. Use status again before sending any real movement.")
         return
 
