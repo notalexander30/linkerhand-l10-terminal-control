@@ -56,6 +56,9 @@ This kills old controller processes, puts `can0` down, waits for you to unplug
 and replug the USB-CAN adapter, brings `can0` back up, and prints CAN counters.
 It does not send hand movement commands.
 
+The `kill` helper only targets old controller/example Python scripts. It uses
+safe process patterns so it does not terminate the running `make` command.
+
 ## Read Status
 
 ```bash

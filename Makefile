@@ -51,9 +51,9 @@ py-check:
 
 # Stop old controller processes before debugging CAN.
 kill:
-	@pkill -f terminal_control.py 2>/dev/null || true
-	@pkill -f gui_control.py 2>/dev/null || true
-	@pkill -f get_set_state.py 2>/dev/null || true
+	@pkill -f '[t]erminal_control.py' 2>/dev/null || true
+	@pkill -f '[g]ui_control.py' 2>/dev/null || true
+	@pkill -f '[g]et_set_state.py' 2>/dev/null || true
 
 # Put CAN down; ignore failure because it may already be down.
 can-down:
