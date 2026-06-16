@@ -3,11 +3,11 @@
 
 The glove shown by the serial console prints lines like:
 
-    KTH5702: | 拇指 | 0 | 0x68 | 193.50° | -30311 | 正常 | 0 |
+    KTH5702: | thumb | 0 | 0x68 | 193.50 deg | -30311 | normal | 0 |
 
 This script reads those lines from /dev/ttyUSB0, parses the 15 sensor angles,
-maps them to the 10 L10 joint values, and can send them through the official
-LinkerHand Python SDK.
+maps selected right-glove sensors directly to the 10 left L10 joint values,
+and can send them through the official LinkerHand Python SDK.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ import linkerhand_l10_sdk as sdk  # noqa: E402
 
 DEFAULT_CALIBRATION = REPO_ROOT / "glove_l10_calibration.json"
 SENSOR_COUNT = 15
+ANGLE_MAX = 360.0
 OPEN_POSE = [255, 70, 255, 255, 255, 255, 255, 255, 255, 255]
 FIST_POSE = [90, 0, 0, 0, 0, 0, 128, 67, 89, 197]
 
@@ -52,6 +53,21 @@ POSE_GROUPS = {
 }
 
 FINGER_NAMES = ["index", "middle", "ring", "little"]
+
+ANGLE_SENSOR_TO_L10_JOINT = {
+    0: 0,   # right glove thumb sensor 0 -> left L10 Thumb Base
+    1: 1,   # right glove thumb sensor 1 -> left L10 Thumb Side Swing
+    2: 9,   # right glove thumb sensor 2 -> left L10 Thumb Rotation
+    3: 2,   # right glove index sensor 0 -> left L10 Index Base
+    4: 6,   # right glove index sensor 1 -> left L10 Index Side Swing
+    6: 3,   # right glove middle sensor 0 -> left L10 Middle Base
+    9: 4,   # right glove ring sensor 0 -> left L10 Ring Base
+    10: 7,  # right glove ring sensor 1 -> left L10 Ring Side Swing
+    12: 5,  # right glove little sensor 0 -> left L10 Little Base
+    13: 8,  # right glove little sensor 1 -> left L10 Little Side Swing
+}
+
+IGNORED_GLOVE_SENSORS = [5, 7, 8, 11, 14]
 
 
 def strip_ansi(text: str) -> str:
@@ -167,6 +183,16 @@ def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
 
 
+def clamp_int(value: float, low: int = 0, high: int = 255) -> int:
+    return int(round(max(low, min(high, value))))
+
+
+def angle_to_position(angle: float, angle_max: float = ANGLE_MAX) -> int:
+    if angle_max <= 0:
+        raise ValueError("angle_max must be greater than 0")
+    return clamp_int((angle / angle_max) * 255.0)
+
+
 def sensor_flex(index: int, angle: float, open_angles: dict, fist_angles: dict) -> float | None:
     key = str(index)
     if key not in open_angles or key not in fist_angles:
@@ -195,6 +221,17 @@ def gain_amount(value: float, gain: float) -> float:
 def joint_value(joint: int, amount: float) -> int:
     value = OPEN_POSE[joint] + amount * (FIST_POSE[joint] - OPEN_POSE[joint])
     return int(round(clamp(value, 0, 255)))
+
+
+def pose_from_angle_map(frame: dict[int, float], angle_max: float = ANGLE_MAX) -> tuple[dict[str, float], list[int]]:
+    pose = [0] * 10
+    mapped: dict[str, float] = {}
+    for sensor_index, joint_index in ANGLE_SENSOR_TO_L10_JOINT.items():
+        angle = frame.get(sensor_index, 0.0)
+        position = angle_to_position(angle, angle_max)
+        pose[joint_index] = position
+        mapped[f"s{sensor_index}->j{joint_index}"] = position
+    return mapped, pose
 
 
 def combine_flex_values(values: list[float], mode: str) -> float:
@@ -300,15 +337,25 @@ def print_preview(frame: dict[int, float], flex: dict[str, float] | None, pose: 
 
 
 def run_bridge(args) -> None:
-    calibration = load_calibration(args.calibration)
-    open_angles = calibration["open"]
-    fist_angles = calibration["fist"]
+    open_angles = None
+    fist_angles = None
+    if args.mapping == "calibrated":
+        calibration = load_calibration(args.calibration)
+        open_angles = calibration["open"]
+        fist_angles = calibration["fist"]
+
     api = None
     if args.send:
         api = connect_hand(args)
         print("LIVE SEND IS ON. Keep the hand clear. Press Ctrl+C to stop.")
     else:
         print("Preview only. Add --send when the mapping looks correct.")
+    if args.mapping == "angle":
+        ignored = ", ".join(str(index) for index in IGNORED_GLOVE_SENSORS)
+        print(f"Mapping: angle. 0 deg -> 0, {args.angle_max:g} deg -> 255.")
+        print(f"Ignoring glove sensors: {ignored}")
+    else:
+        print("Mapping: calibrated open/fist.")
 
     min_interval = 1.0 / max(args.rate, 1.0)
     last_send = 0.0
@@ -319,7 +366,10 @@ def run_bridge(args) -> None:
                 continue
             last_send = now
 
-            flex, _sensor_amounts, pose = pose_from_glove(frame, open_angles, fist_angles, args)
+            if args.mapping == "angle":
+                flex, pose = pose_from_angle_map(frame, args.angle_max)
+            else:
+                flex, _sensor_amounts, pose = pose_from_glove(frame, open_angles, fist_angles, args)
             print_preview(frame, flex, pose)
             if api is not None:
                 api.finger_move(pose=pose)
@@ -352,10 +402,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force", action="store_true", help="Allow hand movement even if SDK detection fails.")
     parser.add_argument("--rate", type=float, default=15.0, help="Maximum send/print rate in Hz.")
     parser.add_argument(
+        "--mapping",
+        choices=["angle", "calibrated"],
+        default="angle",
+        help="angle maps 0..360 degrees directly to 0..255 positions. calibrated uses open/fist calibration.",
+    )
+    parser.add_argument("--angle-max", type=float, default=ANGLE_MAX, help="Glove angle that maps to position 255.")
+    parser.add_argument(
         "--finger-mode",
         choices=["max", "average", "min"],
         default="max",
-        help="How to combine the 3 glove sensors on each non-thumb finger. max closes more strongly.",
+        help="Only for --mapping calibrated. How to combine the 3 glove sensors on each non-thumb finger.",
     )
     parser.add_argument("--finger-gain", type=float, default=1.85, help="Increase/decrease non-thumb finger closing strength.")
     parser.add_argument("--index-gain", type=float, default=None, help="Optional index-only gain override.")
@@ -369,7 +426,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Thumb mapping. direct uses sensors 0/1/2 separately; follow-index is a fallback test.",
     )
     parser.add_argument("--thumb-gain", type=float, default=1.35, help="Increase/decrease thumb movement strength.")
-    parser.add_argument("--invert-thumb", action="store_true", help="Use only if thumb moves opposite after calibration.")
+    parser.add_argument("--invert-thumb", action="store_true", help="Use only if thumb moves opposite in calibrated mode.")
     return parser
 
 
