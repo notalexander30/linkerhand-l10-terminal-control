@@ -81,6 +81,8 @@ DIRECT_L10_SENSOR_FINGER = {
     13: "little",
 }
 
+SELECTABLE_FINGERS = ["all", "thumb", "index", "middle", "ring", "little"]
+
 
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
@@ -220,6 +222,15 @@ def gain_amount(value: float, gain: float) -> float:
     return clamp(value * gain)
 
 
+def tuned_amount(value: float, args) -> float:
+    value = clamp(value)
+    deadzone = clamp(args.deadzone, 0.0, 0.95)
+    if value <= deadzone:
+        return 0.0
+    value = (value - deadzone) / (1.0 - deadzone)
+    return clamp(value ** max(args.curve, 0.05))
+
+
 def joint_value(joint: int, amount: float) -> int:
     value = OPEN_POSE[joint] + amount * (FIST_POSE[joint] - OPEN_POSE[joint])
     return int(round(clamp(value, 0, 255)))
@@ -257,6 +268,8 @@ def pose_from_flex(flex: dict[str, float], args=None) -> list[int]:
     pose = list(OPEN_POSE)
     for finger, joints in POSE_GROUPS.items():
         amount = flex.get(finger, 0.0)
+        if args is not None:
+            amount = tuned_amount(amount, args)
         if finger in FINGER_NAMES and args is not None:
             amount = gain_amount(amount, finger_gain(args, finger))
         for joint in joints:
@@ -271,7 +284,7 @@ def pose_from_direct_l10(frame: dict[int, float], open_angles: dict, fist_angles
 
     for sensor_index, joint in DIRECT_L10_SENSOR_TO_JOINT.items():
         finger = DIRECT_L10_SENSOR_FINGER[sensor_index]
-        amount = sensor_amounts.get(sensor_index, 0.0)
+        amount = tuned_amount(sensor_amounts.get(sensor_index, 0.0), args)
         if finger == "thumb":
             amount = gain_amount(amount, args.thumb_gain)
             if args.invert_thumb:
@@ -289,7 +302,8 @@ def pose_from_direct_l10(frame: dict[int, float], open_angles: dict, fist_angles
 
 def pose_from_glove(frame: dict[int, float], open_angles: dict, fist_angles: dict, args) -> tuple[dict[str, float], dict[int, float], list[int]]:
     if args.mapping == "direct-l10":
-        return pose_from_direct_l10(frame, open_angles, fist_angles, args)
+        flex, sensor_amounts, pose = pose_from_direct_l10(frame, open_angles, fist_angles, args)
+        return flex, sensor_amounts, apply_joint_selection(pose, args)
 
     flex = finger_flex(frame, open_angles, fist_angles, args.finger_mode)
     sensor_amounts = sensor_flex_map(frame, open_angles, fist_angles)
@@ -308,6 +322,9 @@ def pose_from_glove(frame: dict[int, float], open_angles: dict, fist_angles: dic
         thumb_side = sensor_amounts.get(1, flex.get("thumb", 0.0))
         thumb_rotation = sensor_amounts.get(2, flex.get("thumb", 0.0))
 
+    thumb_base = tuned_amount(thumb_base, args)
+    thumb_side = tuned_amount(thumb_side, args)
+    thumb_rotation = tuned_amount(thumb_rotation, args)
     thumb_base = gain_amount(thumb_base, args.thumb_gain)
     thumb_side = gain_amount(thumb_side, args.thumb_gain)
     thumb_rotation = gain_amount(thumb_rotation, args.thumb_gain)
@@ -323,7 +340,38 @@ def pose_from_glove(frame: dict[int, float], open_angles: dict, fist_angles: dic
     flex["thumb_base"] = thumb_base
     flex["thumb_side"] = thumb_side
     flex["thumb_rotation"] = thumb_rotation
-    return flex, sensor_amounts, pose
+    return flex, sensor_amounts, apply_joint_selection(pose, args)
+
+
+def selected_joints(args) -> list[int]:
+    joints: set[int]
+    if args.only_joint:
+        joints = set(args.only_joint)
+    elif args.only == "all":
+        joints = set(range(len(OPEN_POSE)))
+    else:
+        joints = set(POSE_GROUPS[args.only])
+    return sorted(joints)
+
+
+def apply_joint_selection(pose: list[int], args) -> list[int]:
+    joints = selected_joints(args)
+    if len(joints) == len(OPEN_POSE):
+        return pose
+    filtered = list(OPEN_POSE)
+    for joint in joints:
+        filtered[joint] = pose[joint]
+    return filtered
+
+
+def smooth_pose(previous: list[int] | None, pose: list[int], smoothing: float) -> list[int]:
+    smoothing = clamp(smoothing, 0.0, 0.98)
+    if previous is None or smoothing <= 0.0:
+        return pose
+    return [
+        int(round(previous_value * smoothing + current_value * (1.0 - smoothing)))
+        for previous_value, current_value in zip(previous, pose)
+    ]
 
 
 def is_finger_inverted(args, finger: str) -> bool:
@@ -349,13 +397,49 @@ def close_hand(api) -> None:
     sdk.close_sdk(api)
 
 
-def print_preview(frame: dict[int, float], flex: dict[str, float] | None, pose: list[int] | None) -> None:
+def joint_name(index: int) -> str:
+    if 0 <= index < len(sdk.JOINT_NAMES):
+        return sdk.JOINT_NAMES[index]
+    return f"Joint {index}"
+
+
+def print_preview(
+    frame: dict[int, float],
+    flex: dict[str, float] | None,
+    pose: list[int] | None,
+    args,
+    last_frame: dict[int, float] | None = None,
+    last_pose: list[int] | None = None,
+) -> None:
+    if args.print_mode == "quiet":
+        return
+
     angles = " ".join(f"{index}:{frame[index]:.1f}" for index in range(SENSOR_COUNT) if index in frame)
-    print(f"angles {angles}")
+    if args.print_mode == "full" or last_frame is None:
+        print(f"angles {angles}")
+    elif last_frame is not None:
+        angle_changes = [
+            f"s{index}:{frame[index]:.1f}"
+            for index in range(SENSOR_COUNT)
+            if index in frame and abs(frame[index] - last_frame.get(index, frame[index])) >= args.angle_threshold
+        ]
+        if angle_changes:
+            print("changed sensors " + " ".join(angle_changes))
+
     if flex is not None and pose is not None:
-        flex_text = " ".join(f"{finger}={value:.2f}" for finger, value in flex.items())
-        print(f"flex {flex_text}")
-        print(f"pose {pose}")
+        if args.print_mode == "full":
+            flex_text = " ".join(f"{finger}={value:.2f}" for finger, value in flex.items())
+            print(f"flex {flex_text}")
+            print(f"pose {pose}")
+            return
+
+        joint_changes = [
+            f"j{joint}:{joint_name(joint)}={pose[joint]}"
+            for joint in selected_joints(args)
+            if last_pose is None or abs(pose[joint] - last_pose[joint]) >= args.change_threshold
+        ]
+        if joint_changes:
+            print("changed joints " + " | ".join(joint_changes))
 
 
 def run_bridge(args) -> None:
@@ -373,9 +457,20 @@ def run_bridge(args) -> None:
         print(f"Mapping: direct-l10. Ignoring glove sensors: {ignored}")
     else:
         print(f"Mapping: combined. Finger mode: {args.finger_mode}")
+    joints = selected_joints(args)
+    if len(joints) < len(OPEN_POSE):
+        joint_text = ", ".join(f"j{joint}:{joint_name(joint)}" for joint in joints)
+        print(f"Tuning only: {joint_text}. Other L10 joints stay open.")
+    print(
+        f"Tuning: deadzone={args.deadzone}, curve={args.curve}, "
+        f"smoothing={args.smoothing}, print-mode={args.print_mode}"
+    )
 
     min_interval = 1.0 / max(args.rate, 1.0)
     last_send = 0.0
+    last_frame = None
+    last_pose = None
+    previous_pose = None
     try:
         for frame in glove_frames(args.glove_port, args.baud):
             now = time.monotonic()
@@ -384,7 +479,11 @@ def run_bridge(args) -> None:
             last_send = now
 
             flex, _sensor_amounts, pose = pose_from_glove(frame, open_angles, fist_angles, args)
-            print_preview(frame, flex, pose)
+            pose = smooth_pose(previous_pose, pose, args.smoothing)
+            previous_pose = list(pose)
+            print_preview(frame, flex, pose, args, last_frame, last_pose)
+            last_frame = dict(frame)
+            last_pose = list(pose)
             if api is not None:
                 api.finger_move(pose=pose)
     except KeyboardInterrupt:
@@ -394,9 +493,11 @@ def run_bridge(args) -> None:
 
 
 def run_raw_preview(args) -> None:
+    last_frame = None
     try:
         for frame in glove_frames(args.glove_port, args.baud):
-            print_preview(frame, None, None)
+            print_preview(frame, None, None, args, last_frame, None)
+            last_frame = dict(frame)
     except KeyboardInterrupt:
         print("\nStopped.")
 
@@ -415,6 +516,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--send", action="store_true", help="Actually send mapped poses to the hand.")
     parser.add_argument("--force", action="store_true", help="Allow hand movement even if SDK detection fails.")
     parser.add_argument("--rate", type=float, default=15.0, help="Maximum send/print rate in Hz.")
+    parser.add_argument("--only", choices=SELECTABLE_FINGERS, default="all", help="Move only one finger while tuning; other joints stay open.")
+    parser.add_argument("--only-joint", action="append", type=int, choices=range(10), help="Move only this L10 joint. Can be used more than once.")
+    parser.add_argument("--deadzone", type=float, default=0.0, help="Ignore small glove motion below this 0..1 amount.")
+    parser.add_argument("--curve", type=float, default=1.0, help="Sensitivity curve. >1 softer near open, <1 more sensitive.")
+    parser.add_argument("--smoothing", type=float, default=0.0, help="Pose smoothing 0..0.98. Higher is smoother but slower.")
+    parser.add_argument("--print-mode", choices=["changes", "full", "quiet"], default="changes", help="Terminal output style.")
+    parser.add_argument("--change-threshold", type=int, default=2, help="Only print joint changes at least this many L10 units.")
+    parser.add_argument("--angle-threshold", type=float, default=2.0, help="Only print glove sensor changes at least this many degrees.")
     parser.add_argument(
         "--mapping",
         choices=["direct-l10", "combined"],
