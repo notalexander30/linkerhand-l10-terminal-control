@@ -51,6 +51,8 @@ POSE_GROUPS = {
     "little": [5, 8],
 }
 
+FINGER_NAMES = ["index", "middle", "ring", "little"]
+
 
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
@@ -195,7 +197,22 @@ def joint_value(joint: int, amount: float) -> int:
     return int(round(clamp(value, 0, 255)))
 
 
-def finger_flex(frame: dict[int, float], open_angles: dict, fist_angles: dict) -> dict[str, float]:
+def combine_flex_values(values: list[float], mode: str) -> float:
+    if not values:
+        return 0.0
+    if mode == "max":
+        return max(values)
+    if mode == "min":
+        return min(values)
+    return float(statistics.mean(values))
+
+
+def finger_flex(
+    frame: dict[int, float],
+    open_angles: dict,
+    fist_angles: dict,
+    mode: str = "max",
+) -> dict[str, float]:
     result: dict[str, float] = {}
     for finger, indexes in FINGER_GROUPS.items():
         values = [
@@ -204,23 +221,25 @@ def finger_flex(frame: dict[int, float], open_angles: dict, fist_angles: dict) -
             if index in frame
         ]
         values = [value for value in values if value is not None]
-        result[finger] = float(statistics.mean(values)) if values else 0.0
+        result[finger] = combine_flex_values(values, mode)
     return result
 
 
-def pose_from_flex(flex: dict[str, float]) -> list[int]:
+def pose_from_flex(flex: dict[str, float], args=None) -> list[int]:
     pose = list(OPEN_POSE)
     for finger, joints in POSE_GROUPS.items():
         amount = flex.get(finger, 0.0)
+        if finger in FINGER_NAMES and args is not None:
+            amount = gain_amount(amount, finger_gain(args, finger))
         for joint in joints:
             pose[joint] = joint_value(joint, amount)
     return pose
 
 
 def pose_from_glove(frame: dict[int, float], open_angles: dict, fist_angles: dict, args) -> tuple[dict[str, float], dict[int, float], list[int]]:
-    flex = finger_flex(frame, open_angles, fist_angles)
+    flex = finger_flex(frame, open_angles, fist_angles, args.finger_mode)
     sensor_amounts = sensor_flex_map(frame, open_angles, fist_angles)
-    pose = pose_from_flex(flex)
+    pose = pose_from_flex(flex, args)
 
     if args.thumb_mode == "follow-index":
         thumb_base = flex.get("index", 0.0)
@@ -251,6 +270,13 @@ def pose_from_glove(frame: dict[int, float], open_angles: dict, fist_angles: dic
     flex["thumb_side"] = thumb_side
     flex["thumb_rotation"] = thumb_rotation
     return flex, sensor_amounts, pose
+
+
+def finger_gain(args, finger: str) -> float:
+    specific = getattr(args, f"{finger}_gain")
+    if specific is not None:
+        return specific
+    return args.finger_gain
 
 
 def connect_hand(args):
@@ -325,6 +351,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--send", action="store_true", help="Actually send mapped poses to the hand.")
     parser.add_argument("--force", action="store_true", help="Allow hand movement even if SDK detection fails.")
     parser.add_argument("--rate", type=float, default=15.0, help="Maximum send/print rate in Hz.")
+    parser.add_argument(
+        "--finger-mode",
+        choices=["max", "average", "min"],
+        default="max",
+        help="How to combine the 3 glove sensors on each non-thumb finger. max closes more strongly.",
+    )
+    parser.add_argument("--finger-gain", type=float, default=1.85, help="Increase/decrease non-thumb finger closing strength.")
+    parser.add_argument("--index-gain", type=float, default=None, help="Optional index-only gain override.")
+    parser.add_argument("--middle-gain", type=float, default=None, help="Optional middle-only gain override.")
+    parser.add_argument("--ring-gain", type=float, default=None, help="Optional ring-only gain override.")
+    parser.add_argument("--little-gain", type=float, default=None, help="Optional little-only gain override.")
     parser.add_argument(
         "--thumb-mode",
         choices=["direct", "average", "follow-index"],
