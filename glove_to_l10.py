@@ -410,6 +410,7 @@ def print_preview(
     args,
     last_frame: dict[int, float] | None = None,
     last_pose: list[int] | None = None,
+    show_sensor_changes: bool = False,
 ) -> None:
     if args.print_mode == "quiet":
         return
@@ -417,7 +418,7 @@ def print_preview(
     angles = " ".join(f"{index}:{frame[index]:.1f}" for index in range(SENSOR_COUNT) if index in frame)
     if args.print_mode == "full" or last_frame is None:
         print(f"angles {angles}")
-    elif last_frame is not None:
+    elif show_sensor_changes and last_frame is not None:
         angle_changes = [
             f"s{index}:{frame[index]:.1f}"
             for index in range(SENSOR_COUNT)
@@ -481,11 +482,13 @@ def run_bridge(args) -> None:
             flex, _sensor_amounts, pose = pose_from_glove(frame, open_angles, fist_angles, args)
             pose = smooth_pose(previous_pose, pose, args.smoothing)
             previous_pose = list(pose)
-            print_preview(frame, flex, pose, args, last_frame, last_pose)
+            print_preview(frame, flex, pose, args, last_frame, last_pose, args.print_sensors)
             last_frame = dict(frame)
             last_pose = list(pose)
             if api is not None:
                 api.finger_move(pose=pose)
+            if args.once:
+                break
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
@@ -496,8 +499,10 @@ def run_raw_preview(args) -> None:
     last_frame = None
     try:
         for frame in glove_frames(args.glove_port, args.baud):
-            print_preview(frame, None, None, args, last_frame, None)
+            print_preview(frame, None, None, args, last_frame, None, True)
             last_frame = dict(frame)
+            if args.once:
+                break
     except KeyboardInterrupt:
         print("\nStopped.")
 
@@ -514,14 +519,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seconds", type=float, default=3.0, help="Calibration duration.")
     parser.add_argument("--raw", action="store_true", help="Only print parsed glove angles.")
     parser.add_argument("--send", action="store_true", help="Actually send mapped poses to the hand.")
+    parser.add_argument("--once", action="store_true", help="Read one glove frame, print/send once, then exit.")
     parser.add_argument("--force", action="store_true", help="Allow hand movement even if SDK detection fails.")
     parser.add_argument("--rate", type=float, default=15.0, help="Maximum send/print rate in Hz.")
-    parser.add_argument("--only", choices=SELECTABLE_FINGERS, default="all", help="Move only one finger while tuning; other joints stay open.")
+    parser.add_argument(
+        "--only",
+        nargs="?",
+        const="all",
+        choices=SELECTABLE_FINGERS,
+        default="all",
+        help="Move only one finger while tuning; other joints stay open. If no value is given, all is used.",
+    )
     parser.add_argument("--only-joint", action="append", type=int, choices=range(10), help="Move only this L10 joint. Can be used more than once.")
     parser.add_argument("--deadzone", type=float, default=0.0, help="Ignore small glove motion below this 0..1 amount.")
     parser.add_argument("--curve", type=float, default=1.0, help="Sensitivity curve. >1 softer near open, <1 more sensitive.")
     parser.add_argument("--smoothing", type=float, default=0.0, help="Pose smoothing 0..0.98. Higher is smoother but slower.")
     parser.add_argument("--print-mode", choices=["changes", "full", "quiet"], default="changes", help="Terminal output style.")
+    parser.add_argument("--print-sensors", action="store_true", help="Also print changed glove sensors in normal bridge mode.")
     parser.add_argument("--change-threshold", type=int, default=2, help="Only print joint changes at least this many L10 units.")
     parser.add_argument("--angle-threshold", type=float, default=2.0, help="Only print glove sensor changes at least this many degrees.")
     parser.add_argument(
