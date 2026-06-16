@@ -278,6 +278,8 @@ def pose_from_direct_l10(frame: dict[int, float], open_angles: dict, fist_angles
                 amount = 1.0 - amount
         else:
             amount = gain_amount(amount, finger_gain(args, finger))
+            if is_finger_inverted(args, finger):
+                amount = 1.0 - amount
 
         pose[joint] = joint_value(joint, amount)
         flex[f"{finger}_s{sensor_index}_j{joint}"] = amount
@@ -322,6 +324,11 @@ def pose_from_glove(frame: dict[int, float], open_angles: dict, fist_angles: dic
     flex["thumb_side"] = thumb_side
     flex["thumb_rotation"] = thumb_rotation
     return flex, sensor_amounts, pose
+
+
+def is_finger_inverted(args, finger: str) -> bool:
+    specific = getattr(args, f"invert_{finger}")
+    return bool(args.invert_fingers or specific)
 
 
 def finger_gain(args, finger: str) -> float:
@@ -425,6 +432,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--middle-gain", type=float, default=None, help="Optional middle-only gain override.")
     parser.add_argument("--ring-gain", type=float, default=None, help="Optional ring-only gain override.")
     parser.add_argument("--little-gain", type=float, default=None, help="Optional little-only gain override.")
+    parser.add_argument("--invert-fingers", action="store_true", help="Invert all non-thumb fingers.")
+    parser.add_argument("--invert-index", action="store_true", help="Invert only the index finger.")
+    parser.add_argument("--invert-middle", action="store_true", help="Invert only the middle finger.")
+    parser.add_argument("--invert-ring", action="store_true", help="Invert only the ring finger.")
+    parser.add_argument("--invert-little", action="store_true", help="Invert only the little finger.")
     parser.add_argument(
         "--thumb-mode",
         choices=["direct", "average", "follow-index"],
