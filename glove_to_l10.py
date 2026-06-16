@@ -6,8 +6,9 @@ The glove shown by the serial console prints lines like:
     KTH5702: | 拇指 | 0 | 0x68 | 193.50° | -30311 | 正常 | 0 |
 
 This script reads those lines from /dev/ttyUSB0, parses the 15 sensor angles,
-maps them to the 10 L10 joint values, and can send them through the official
-LinkerHand Python SDK.
+maps selected glove points to the 10 L10 joint values, ignores glove points
+that do not exist on L10, and can send through the official LinkerHand Python
+SDK.
 """
 
 from __future__ import annotations
@@ -52,6 +53,33 @@ POSE_GROUPS = {
 }
 
 FINGER_NAMES = ["index", "middle", "ring", "little"]
+
+DIRECT_L10_SENSOR_TO_JOINT = {
+    0: 0,   # thumb sensor 0 -> Thumb Base
+    1: 1,   # thumb sensor 1 -> Thumb Side Swing
+    2: 9,   # thumb sensor 2 -> Thumb Rotation
+    3: 2,   # index sensor 0 -> Index Base
+    4: 6,   # index sensor 1 -> Index Side Swing
+    6: 3,   # middle sensor 0 -> Middle Base
+    9: 4,   # ring sensor 0 -> Ring Base
+    10: 7,  # ring sensor 1 -> Ring Side Swing
+    12: 5,  # little sensor 0 -> Little Base
+    13: 8,  # little sensor 1 -> Little Side Swing
+}
+
+IGNORED_DIRECT_L10_SENSORS = [5, 7, 8, 11, 14]
+DIRECT_L10_SENSOR_FINGER = {
+    0: "thumb",
+    1: "thumb",
+    2: "thumb",
+    3: "index",
+    4: "index",
+    6: "middle",
+    9: "ring",
+    10: "ring",
+    12: "little",
+    13: "little",
+}
 
 
 def strip_ansi(text: str) -> str:
@@ -236,7 +264,31 @@ def pose_from_flex(flex: dict[str, float], args=None) -> list[int]:
     return pose
 
 
+def pose_from_direct_l10(frame: dict[int, float], open_angles: dict, fist_angles: dict, args) -> tuple[dict[str, float], dict[int, float], list[int]]:
+    sensor_amounts = sensor_flex_map(frame, open_angles, fist_angles)
+    flex: dict[str, float] = {}
+    pose = list(OPEN_POSE)
+
+    for sensor_index, joint in DIRECT_L10_SENSOR_TO_JOINT.items():
+        finger = DIRECT_L10_SENSOR_FINGER[sensor_index]
+        amount = sensor_amounts.get(sensor_index, 0.0)
+        if finger == "thumb":
+            amount = gain_amount(amount, args.thumb_gain)
+            if args.invert_thumb:
+                amount = 1.0 - amount
+        else:
+            amount = gain_amount(amount, finger_gain(args, finger))
+
+        pose[joint] = joint_value(joint, amount)
+        flex[f"{finger}_s{sensor_index}_j{joint}"] = amount
+
+    return flex, sensor_amounts, pose
+
+
 def pose_from_glove(frame: dict[int, float], open_angles: dict, fist_angles: dict, args) -> tuple[dict[str, float], dict[int, float], list[int]]:
+    if args.mapping == "direct-l10":
+        return pose_from_direct_l10(frame, open_angles, fist_angles, args)
+
     flex = finger_flex(frame, open_angles, fist_angles, args.finger_mode)
     sensor_amounts = sensor_flex_map(frame, open_angles, fist_angles)
     pose = pose_from_flex(flex, args)
@@ -309,6 +361,11 @@ def run_bridge(args) -> None:
         print("LIVE SEND IS ON. Keep the hand clear. Press Ctrl+C to stop.")
     else:
         print("Preview only. Add --send when the mapping looks correct.")
+    if args.mapping == "direct-l10":
+        ignored = ", ".join(str(index) for index in IGNORED_DIRECT_L10_SENSORS)
+        print(f"Mapping: direct-l10. Ignoring glove sensors: {ignored}")
+    else:
+        print(f"Mapping: combined. Finger mode: {args.finger_mode}")
 
     min_interval = 1.0 / max(args.rate, 1.0)
     last_send = 0.0
@@ -352,10 +409,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force", action="store_true", help="Allow hand movement even if SDK detection fails.")
     parser.add_argument("--rate", type=float, default=15.0, help="Maximum send/print rate in Hz.")
     parser.add_argument(
+        "--mapping",
+        choices=["direct-l10", "combined"],
+        default="direct-l10",
+        help="direct-l10 maps only 10 matching glove points and ignores 5,7,8,11,14.",
+    )
+    parser.add_argument(
         "--finger-mode",
         choices=["max", "average", "min"],
         default="max",
-        help="How to combine the 3 glove sensors on each non-thumb finger. max closes more strongly.",
+        help="Only for --mapping combined. How to combine the 3 glove sensors on each non-thumb finger.",
     )
     parser.add_argument("--finger-gain", type=float, default=1.85, help="Increase/decrease non-thumb finger closing strength.")
     parser.add_argument("--index-gain", type=float, default=None, help="Optional index-only gain override.")
