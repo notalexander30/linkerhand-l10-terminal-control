@@ -177,6 +177,24 @@ def sensor_flex(index: int, angle: float, open_angles: dict, fist_angles: dict) 
     return clamp((angle - open_angle) / span)
 
 
+def sensor_flex_map(frame: dict[int, float], open_angles: dict, fist_angles: dict) -> dict[int, float]:
+    result: dict[int, float] = {}
+    for index, angle in frame.items():
+        value = sensor_flex(index, angle, open_angles, fist_angles)
+        if value is not None:
+            result[index] = value
+    return result
+
+
+def gain_amount(value: float, gain: float) -> float:
+    return clamp(value * gain)
+
+
+def joint_value(joint: int, amount: float) -> int:
+    value = OPEN_POSE[joint] + amount * (FIST_POSE[joint] - OPEN_POSE[joint])
+    return int(round(clamp(value, 0, 255)))
+
+
 def finger_flex(frame: dict[int, float], open_angles: dict, fist_angles: dict) -> dict[str, float]:
     result: dict[str, float] = {}
     for finger, indexes in FINGER_GROUPS.items():
@@ -195,9 +213,44 @@ def pose_from_flex(flex: dict[str, float]) -> list[int]:
     for finger, joints in POSE_GROUPS.items():
         amount = flex.get(finger, 0.0)
         for joint in joints:
-            value = OPEN_POSE[joint] + amount * (FIST_POSE[joint] - OPEN_POSE[joint])
-            pose[joint] = int(round(clamp(value, 0, 255)))
+            pose[joint] = joint_value(joint, amount)
     return pose
+
+
+def pose_from_glove(frame: dict[int, float], open_angles: dict, fist_angles: dict, args) -> tuple[dict[str, float], dict[int, float], list[int]]:
+    flex = finger_flex(frame, open_angles, fist_angles)
+    sensor_amounts = sensor_flex_map(frame, open_angles, fist_angles)
+    pose = pose_from_flex(flex)
+
+    if args.thumb_mode == "follow-index":
+        thumb_base = flex.get("index", 0.0)
+        thumb_side = flex.get("index", 0.0)
+        thumb_rotation = flex.get("index", 0.0)
+    elif args.thumb_mode == "average":
+        thumb_base = flex.get("thumb", 0.0)
+        thumb_side = flex.get("thumb", 0.0)
+        thumb_rotation = flex.get("thumb", 0.0)
+    else:
+        thumb_base = sensor_amounts.get(0, flex.get("thumb", 0.0))
+        thumb_side = sensor_amounts.get(1, flex.get("thumb", 0.0))
+        thumb_rotation = sensor_amounts.get(2, flex.get("thumb", 0.0))
+
+    thumb_base = gain_amount(thumb_base, args.thumb_gain)
+    thumb_side = gain_amount(thumb_side, args.thumb_gain)
+    thumb_rotation = gain_amount(thumb_rotation, args.thumb_gain)
+
+    if args.invert_thumb:
+        thumb_base = 1.0 - thumb_base
+        thumb_side = 1.0 - thumb_side
+        thumb_rotation = 1.0 - thumb_rotation
+
+    pose[0] = joint_value(0, thumb_base)
+    pose[1] = joint_value(1, thumb_side)
+    pose[9] = joint_value(9, thumb_rotation)
+    flex["thumb_base"] = thumb_base
+    flex["thumb_side"] = thumb_side
+    flex["thumb_rotation"] = thumb_rotation
+    return flex, sensor_amounts, pose
 
 
 def connect_hand(args):
@@ -240,8 +293,7 @@ def run_bridge(args) -> None:
                 continue
             last_send = now
 
-            flex = finger_flex(frame, open_angles, fist_angles)
-            pose = pose_from_flex(flex)
+            flex, _sensor_amounts, pose = pose_from_glove(frame, open_angles, fist_angles, args)
             print_preview(frame, flex, pose)
             if api is not None:
                 api.finger_move(pose=pose)
@@ -273,6 +325,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--send", action="store_true", help="Actually send mapped poses to the hand.")
     parser.add_argument("--force", action="store_true", help="Allow hand movement even if SDK detection fails.")
     parser.add_argument("--rate", type=float, default=15.0, help="Maximum send/print rate in Hz.")
+    parser.add_argument(
+        "--thumb-mode",
+        choices=["direct", "average", "follow-index"],
+        default="direct",
+        help="Thumb mapping. direct uses sensors 0/1/2 separately; follow-index is a fallback test.",
+    )
+    parser.add_argument("--thumb-gain", type=float, default=1.35, help="Increase/decrease thumb movement strength.")
+    parser.add_argument("--invert-thumb", action="store_true", help="Use only if thumb moves opposite after calibration.")
     return parser
 
 
